@@ -1,0 +1,336 @@
+﻿<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>CSV Validator — Обработка некорректных данных</title>
+    <style>
+        :root {
+            font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+            color: #111
+        }
+
+        body {
+            max-width: 1100px;
+            margin: 28px auto;
+            padding: 20px;
+            background: #fafafa;
+            border-radius: 12px;
+            box-shadow: 0 6px 30px rgba(0,0,0,0.06)
+        }
+
+        h1 {
+            font-size: 20px;
+            margin: 0 0 8px
+        }
+
+        p.lead {
+            margin: 0 0 18px;
+            color: #444
+        }
+
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px
+        }
+
+        input[type=file] {
+            padding: 6px
+        }
+
+        button {
+            background: #0b66ff;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            cursor: pointer
+        }
+
+            button.ghost {
+                background: transparent;
+                color: #0b66ff;
+                border: 1px solid #d6e4ff
+            }
+
+        .results {
+            background: white;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid #eee
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap
+        }
+
+        .card {
+            flex: 1 1 220px;
+            padding: 10px;
+            background: #f7f9ff;
+            border-radius: 8px
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px
+        }
+
+        th, td {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+            font-size: 13px
+        }
+
+        .bad {
+            color: #b02121;
+            font-weight: 600
+        }
+
+        .ok {
+            color: #117a17;
+            font-weight: 600
+        }
+
+        pre {
+            white-space: pre-wrap;
+            font-size: 13px
+        }
+
+        .actions {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px
+        }
+
+        .small {
+            font-size: 13px;
+            color: #666
+        }
+    </style>
+</head>
+<body>
+    <h1>CSV Validator — Обработка некорректных данных</h1>
+    <p class="lead">Загрузите CSV-файл. Скрипт проверит: заголовки, пропуски, некорректные даты, отрицательные и выбросные значения в sales. Результат — сводка + примеры проблемных строк. Можно скачать очищенную версию.</p>
+
+    <div class="controls">
+        <input id="file" type="file" accept=".csv" />
+        <button id="check">Проверить файл</button>
+        <button id="download" class="ghost" disabled>Скачать очищенный CSV</button>
+        <div style="margin-left:auto" class="small">Обязательные поля: <code>name, segment, state, city, order_date, ship_mode, sales</code></div>
+    </div>
+
+    <div class="results" id="out">
+        <div id="summary">Файл не загружен.</div>
+        <div id="details"></div>
+    </div>
+
+    <script>
+  // Требуемые поля
+  const REQUIRED = ['name','segment','state','city','order_date','ship_mode','sales'];
+
+  // Простая robust CSV-парсер, поддерживает кавычки и запятые внутри полей
+  function parseCSV(text){
+    const rows = [];
+    let cur = '';
+    let row = [];
+    let inQuotes = false;
+    for (let i=0;i<text.length;i++){
+      const ch = text[i];
+      const next = text[i+1];
+      if(ch === '"'){
+        if(inQuotes && next === '"') { cur += '"'; i++; continue; } // escaped quote
+        inQuotes = !inQuotes;
+        continue;
+      }
+      if(ch === ',' && !inQuotes){ row.push(cur); cur = ''; continue; }
+      if((ch === '\r' || ch === '\n') && !inQuotes){
+        if(cur !== '' || row.length>0){ row.push(cur); rows.push(row); row = []; cur = ''; }
+        // handle \r\n
+        if(ch === '\r' && next === '\n') i++;
+        continue;
+      }
+      cur += ch;
+    }
+    // последний
+    if(inQuotes){ /* некорректный CSV — оставляем всё как есть */ }
+    if(cur !== '' || row.length>0){ row.push(cur); rows.push(row); }
+    return rows;
+  }
+
+  function isValidDate(s){
+    if(!s) return false;
+    const d = new Date(s);
+    if(isNaN(d.getTime())) return false;
+    const year = d.getFullYear();
+    if(year < 1900 || year > 2100) return false;
+    return true;
+  }
+
+  function toNumber(s){
+    if(s === null || s === undefined) return NaN;
+    const cleaned = s.replace(/\s+/g,'').replace(/,/g,'.');
+    return Number(cleaned);
+  }
+
+  function detectOutliers(nums){
+    // IQR method. nums - array of numbers (no NaN). returns threshold > Q3 + 1.5*IQR
+    if(nums.length === 0) return {iqr:null,threshold:null};
+    const sorted = nums.slice().sort((a,b)=>a-b);
+    function q(arr,p){
+      const pos = (arr.length-1)*p; const base = Math.floor(pos); const rest = pos - base;
+      if(arr[base+1] !== undefined) return arr[base] + rest*(arr[base+1]-arr[base]);
+      return arr[base];
+    }
+    const q1 = q(sorted,0.25); const q3 = q(sorted,0.75);
+    const iqr = q3 - q1; const thresh = q3 + 1.5*iqr;
+    return {iqr,threshold:thresh,q1,q3};
+  }
+
+  document.getElementById('check').addEventListener('click', ()=>{
+    const f = document.getElementById('file').files[0];
+    if(!f){ showMessage('Ошибка: файл не выбран.'); return; }
+    const reader = new FileReader();
+    reader.onload = e => processCSV(String(e.target.result));
+    reader.onerror = ()=> showMessage('Ошибка чтения файла.');
+    reader.readAsText(f,'utf-8');
+  });
+
+  let lastCleanCSV = null;
+  document.getElementById('download').addEventListener('click', ()=>{
+    if(!lastCleanCSV) return;
+    const blob = new Blob([lastCleanCSV],{type:'text/csv;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'cleaned.csv'; a.click(); URL.revokeObjectURL(url);
+  });
+
+  function showMessage(msg){ document.getElementById('summary').innerHTML = '<strong>'+msg+'</strong>'; document.getElementById('details').innerHTML = ''; }
+
+  function processCSV(text){
+    if(!text || text.trim().length === 0){ showMessage('Файл пустой.'); return; }
+    const rows = parseCSV(text);
+    if(rows.length === 0){ showMessage('Файл пустой или не удалось распарсить.'); return; }
+    const header = rows[0].map(h=>h.trim());
+
+    // Проверки структуры
+    const missing = REQUIRED.filter(h=>!header.includes(h));
+    const extra = header.filter(h=>!REQUIRED.includes(h));
+
+    if(rows.length === 1 && header.every(s=>!s)){ showMessage('Файл пустой (нет заголовков и данных).'); return; }
+
+    if(rows.length === 1 && header.length === REQUIRED.length && missing.length === 0){
+      // только заголовки, без записей
+      showMessage('Файл содержит только заголовки, записи отсутствуют.');
+      return;
+    }
+
+    let report = [];
+    if(missing.length > 0){ report.push({type:'structure',text:'Отсутствующие поля: '+missing.join(', ')}); }
+    if(extra.length > 0){ report.push({type:'structure',text:'Лишние/неожиданные поля: '+extra.join(', ')}); }
+
+    if(report.some(r=>r.type === 'structure')){
+      // Отображаем и прекращаем — по условию первый набор данных с неверными полями не требует дальнейшей обработки
+      const html = ['<div class="row">'];
+      html.push('<div class="card"><strong>Структура файла</strong><div class="small">Заголовки: '+header.join(', ')+'</div></div>');
+      html.push('</div>');
+      html.push('<div style="margin-top:10px">');
+      report.forEach(r=> html.push('<div class="bad">'+r.text+'</div>'));
+      html.push('</div>');
+      document.getElementById('summary').innerHTML = '<strong>Ошибка структуры CSV</strong>';
+      document.getElementById('details').innerHTML = html.join('');
+      document.getElementById('download').disabled = true; lastCleanCSV = null;
+      return;
+    }
+
+    // Структура корректна — анализ данных
+    const data = rows.slice(1).map(r=>{
+      const obj = {}; for(let i=0;i<header.length;i++) obj[header[i]] = (r[i] !== undefined ? r[i].trim() : ''); return obj;
+    });
+
+    if(data.length === 0){ showMessage('Файл содержит только заголовки, данных нет.'); return; }
+
+    // Подсчёт проблем
+    let missingCount = 0; let invalidDates = 0; let negativeSales = 0; let nanSales = 0; let outlierCount = 0;
+    const missingRows = []; const invalidDateRows = []; const negativeRows = []; const nanSalesRows = [];
+    const allSales = [];
+
+    data.forEach((row, idx)=>{
+      // пропущенные значения — если хоть одно поле пустое
+      const hasEmpty = REQUIRED.some(f=>!(row[f] && row[f].toString().trim().length>0));
+      if(hasEmpty){ missingCount++; missingRows.push({idx:idx+2,row}); }
+      // даты
+      if(!isValidDate(row['order_date'])){ invalidDates++; invalidDateRows.push({idx:idx+2,row}); }
+      // sales
+      const num = toNumber(row['sales']);
+      if(isNaN(num)){ nanSales++; nanSalesRows.push({idx:idx+2,row}); }
+      else { allSales.push(num); if(num < 0){ negativeSales++; negativeRows.push({idx:idx+2,row,num}); } }
+    });
+
+    // выбросы методом IQR
+    const out = detectOutliers(allSales);
+    const outliersIdx = [];
+    if(out.threshold !== null){
+      data.forEach((row, idx)=>{
+        const num = toNumber(row['sales']);
+        if(!isNaN(num) && num > out.threshold){ outlierCount++; outliersIdx.push({idx:idx+2,row,num}); }
+      });
+    }
+
+    // Итоговая сводка
+    let sumHtml = '<div class="row">';
+    sumHtml += `<div class="card"><strong>Строк всего</strong><div class="small">${data.length}</div></div>`;
+    sumHtml += `<div class="card"><strong>Строк с пропусками</strong><div class="small">${missingCount}</div></div>`;
+    sumHtml += `<div class="card"><strong>Некорректные даты</strong><div class="small">${invalidDates}</div></div>`;
+    sumHtml += `<div class="card"><strong>Нечисловые sales</strong><div class="small">${nanSales}</div></div>`;
+    sumHtml += `<div class="card"><strong>Отрицательные sales</strong><div class="small">${negativeSales}</div></div>`;
+    sumHtml += `<div class="card"><strong>Выбросы в sales</strong><div class="small">${outlierCount}</div></div>`;
+    sumHtml += '</div>';
+
+    // Подробности: показать по 5 примеров каждой категории
+    function makeTableExamples(title, items, fields, valueField){
+      if(items.length === 0) return '';
+      let html = `<h3 style="margin-top:12px">${title} (показаны первые ${Math.min(5,items.length)})</h3>`;
+      html += '<table><thead><tr>' + fields.map(f=>'<th>'+f+'</th>').join('') + '<th>Строка</th></tr></thead><tbody>';
+      for(let i=0;i<Math.min(5,items.length);i++){
+        const it = items[i]; const r = it.row;
+        html += '<tr>' + fields.map(f=>'<td>'+escapeHtml(String(r[f]||''))+'</td>').join('') + `<td>${it.idx}</td></tr>`;
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+
+    let details = '';
+    details += makeTableExamples('Строки с пропущенными значениями', missingRows,['name','segment','state','city','order_date','ship_mode','sales']);
+    details += makeTableExamples('Строки с некорректными датами', invalidDateRows,['order_date','name','state','city','sales']);
+    details += makeTableExamples('Строки с нечисловыми sales', nanSalesRows,['sales','name','order_date','state']);
+    details += makeTableExamples('Строки с отрицательными sales', negativeRows,['sales','name','order_date','state']);
+    details += makeTableExamples('Строки-выбросы по sales', outliersIdx,['sales','name','order_date','state']);
+
+    document.getElementById('summary').innerHTML = '<strong>Анализ данных завершён</strong>';
+    document.getElementById('details').innerHTML = sumHtml + details;
+
+    // Подготовить очищенную версию: удалить строки с пропусками или NaN sales или некорректной даты (по умолчанию)
+    const cleaned = [header.join(',')];
+    data.forEach((row,idx)=>{
+      const hasEmpty = REQUIRED.some(f=>!(row[f] && row[f].toString().trim().length>0));
+      if(hasEmpty) return;
+      if(!isValidDate(row['order_date'])) return;
+      const num = toNumber(row['sales']); if(isNaN(num)) return;
+      const line = header.map(h=>quoteIfNeeded(row[h]||'')).join(',');
+      cleaned.push(line);
+    });
+    lastCleanCSV = cleaned.join('\n');
+    document.getElementById('download').disabled = false;
+  }
+
+  function quoteIfNeeded(s){ if(s.includes(',') || s.includes('\n') || s.includes('"')) return '"'+s.replace(/"/g,'""')+'"'; return s; }
+  function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    </script>
+</body>
+</html>
