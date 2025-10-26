@@ -1,0 +1,55 @@
+name: YAML Student Test - File and Directory Validation
+on:
+  - pull_request
+
+jobs:
+  run-autograding-tests:
+    runs-on: ubuntu-cloud-runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Test 1: Check for README.md file
+      - id: test1
+        name: Check README.md exists
+        uses: https://gitverse.ru/art/autograding-io-grader@v2
+        with:
+          test-name: README.md File Check
+          command: # ЗАПОЛНИТЕ КОМАНДУ: проверьте наличие файла README.md
+          expected-output: ""
+          comparison-method: exact
+          timeout: 10
+
+      # Test 2: Check for src directory
+      - id: test2
+        name: Check src directory exists
+        uses: https://gitverse.ru/art/autograding-io-grader@v2
+        with:
+          test-name: src Directory Check
+          command: # ЗАПОЛНИТЕ КОМАНДУ: проверьте наличие папки src
+          expected-output: ""
+          comparison-method: exact
+          timeout: 10
+
+      # Test 3: Check Hello World program in src directory
+      # ЗАДАНИЕ: Заполните команду ниже, чтобы она выполняла программу из папки src
+      # Программа должна выводить текст "Hello world"
+      
+      - id: test3
+        name: Check Hello World program
+        uses: https://gitverse.ru/art/autograding-io-grader@v2
+        with:
+          test-name: Hello World Program Check
+          command: # ВСТАВЬТЕ СВОЮ КОМАНДУ ЗДЕСЬ
+          expected-output: "Hello world"
+          comparison-method: contains
+          timeout: 10
+
+      - name: Autograding Reporter
+        uses: https://gitverse.ru/art/autograding-grading-reporter@v2
+        env:
+          TEST1_RESULTS: ${{steps.test1.outputs.result}}
+          TEST2_RESULTS: ${{steps.test2.outputs.result}}
+          TEST3_RESULTS: ${{steps.test3.outputs.result}}
+        with:
+          runners: test1,test2,test3
